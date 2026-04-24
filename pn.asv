@@ -1,0 +1,137 @@
+clc; clear; close all;
+
+%% ===================== 1. 文件列表 =====================
+baseDir = "datasource4/phase_decimated";
+
+files12 = {
+    "phi12_stage_1_207812Hz.dat"
+    "phi12_stage_2_20781Hz.dat"
+    "phi12_stage_3_2078Hz.dat"
+    "phi12_stage_4_208Hz.dat"
+};
+
+files34 = {
+    "phi34_stage_1_207812Hz.dat"
+    "phi34_stage_2_20781Hz.dat"
+    "phi34_stage_3_2078Hz.dat"
+    "phi34_stage_4_208Hz.dat"
+};
+
+NumStages = numel(files12);
+
+%% ===================== 2. 采样率 =====================
+FS = 133e6;
+CIC_R = 64;
+Fs0 = FS / CIC_R;
+
+FsList = [Fs0/10; Fs0/100; Fs0/1000; Fs0/10000];
+
+%% ===================== ⭐ 3. 自定义频段（核心修改）=====================
+% 每个stage独立控制显示范围
+fStartList = [1e3, 1e2, 1, 0];      % 起始频率
+fEndList   = [1e6, 1e4, 1e3, 10];   % 截止频率
+
+%% ===================== 4. Welch参数 =====================
+nfft = 4096;
+win = hann(nfft,'periodic');
+noverlap = nfft/2;
+
+maxAvg = 3000;
+
+%% ===================== 5. 拼接容器 =====================
+All_f = [];
+All_L_auto = [];
+All_L_cross = [];
+
+%% ===================== 6. 主循环 =====================
+for st = 1:NumStages
+
+    fprintf('\n==== Stage %d ====\n',st);
+
+    file1 = fullfile(baseDir, files12{st});
+    file2 = fullfile(baseDir, files34{st});
+
+    Fs = FsList(st);
+
+    %% ===== 读取数据 =====
+    maxPoints = (nfft/2) * maxAvg;
+
+    fid1 = fopen(file1,'rb');
+    fid2 = fopen(file2,'rb');
+
+    data1 = fread(fid1, maxPoints, 'double');
+    data2 = fread(fid2, maxPoints, 'double');
+
+    fclose(fid1); fclose(fid2);
+
+    N = min(length(data1), length(data2));
+    data1 = data1(1:N);
+    data2 = data2(1:N);
+
+    fprintf('使用数据长度: %d\n', N);
+
+    %% ===== 去均值 =====
+    data1 = data1 - mean(data1);
+    data2 = data2 - mean(data2);
+
+    %% ===================== Welch =====================
+    [Pxx,f] = pwelch(data1, win, noverlap, nfft, Fs);
+    [Pxy,~] = cpsd(data1, data2, win, noverlap, nfft, Fs);
+
+    L_auto  = 10*log10(Pxx/2);
+    L_cross = 10*log10(abs(Pxy)/2);
+
+    %% ===================== ⭐ 可配置频段选择 =====================
+    fStart = fStartList(st);
+    fEnd   = fEndList(st);
+
+    fmask = (f >= fStart) & (f <= fEnd);
+
+    f = f(fmask);
+    L_auto = L_auto(fmask);
+    L_cross = L_cross(fmask);
+
+    %% ===================== 拼接 =====================
+    All_f = [All_f; f];
+    All_L_auto = [All_L_auto; L_auto];
+    All_L_cross = [All_L_cross; L_cross];
+
+    %% ===================== 每级绘图 =====================
+    figure('Name',sprintf('Stage %d',st),'Color','w');
+
+    subplot(2,1,1);
+    semilogx(f,L_auto,'LineWidth',1.2);
+    grid on;
+    title(sprintf('Stage %d 自谱',st));
+
+    subplot(2,1,2);
+    semilogx(f,L_cross,'LineWidth',1.2);
+    grid on;
+    title(sprintf('Stage %d 互谱',st));
+
+end
+
+%% ===================== 7. 拼接 =====================
+[All_f,idx] = sort(All_f);
+All_L_auto = All_L_auto(idx);
+All_L_cross = All_L_cross(idx);
+
+[All_f,idx] = unique(All_f);
+All_L_auto = All_L_auto(idx);
+All_L_cross = All_L_cross(idx);
+
+%% ===================== 8. 平滑 =====================
+All_L_auto  = smoothdata(All_L_auto,'movmedian',15);
+All_L_cross = smoothdata(All_L_cross,'movmedian',15);
+
+%% ===================== 9. 总图 =====================
+figure('Color','w');
+
+semilogx(All_f, All_L_auto,'LineWidth',1.5); hold on;
+semilogx(All_f, All_L_cross,'LineWidth',1.5);
+
+grid on;
+xlabel('Frequency (Hz)');
+ylabel('Phase Noise (dBc/Hz)');
+legend('Auto Spectrum','Cross Spectrum');
+title('Merged Phase Noise Spectrum');
